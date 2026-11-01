@@ -91,3 +91,41 @@ func TestOpenAICompatExecutorPreservesResponsesInstructionRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAICompatExecutorDemotesDeveloperMedia(t *testing.T) {
+	var upstreamBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upstreamBody, _ = io.ReadAll(request.Body)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "openai-compatibility",
+		Attributes: map[string]string{"base_url": server.URL + "/v1", "api_key": "test-key"},
+	}
+	request := cliproxyexecutor.Request{
+		Model: "test-model",
+		Payload: []byte(`{"input":[
+			{"type":"message","role":"developer","content":[
+				{"type":"input_text","text":"inspect this image"},
+				{"type":"input_image","image_url":"data:image/png;base64,AA=="}
+			]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]}`),
+	}
+	options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse}
+	if _, err := executor.Execute(context.Background(), auth, request, options); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaMessage := gjson.GetBytes(upstreamBody, "messages.0")
+	if got := mediaMessage.Get("role").String(); got != "user" {
+		t.Fatalf("media message role = %q, want user; body=%s", got, upstreamBody)
+	}
+	if got := mediaMessage.Get("content.1.type").String(); got != "image_url" {
+		t.Fatalf("media part type = %q, want image_url; body=%s", got, upstreamBody)
+	}
+}

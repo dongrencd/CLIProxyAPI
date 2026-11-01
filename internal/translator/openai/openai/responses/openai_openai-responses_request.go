@@ -252,6 +252,13 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			case "message", "":
 				// Handle regular message conversion
 				role := item.Get("role").String()
+				content := item.Get("content")
+				if role == "developer" && responsesContentHasChatCompletionsMedia(content) {
+					// Chat Completions developer messages are text-only. Keep text-only
+					// instructions authoritative, but use a user turn for media so the
+					// provider can accept the image, file, audio, or video part.
+					role = "user"
+				}
 				// Chat Completions supports developer messages. Preserve their role and
 				// position so mid-session instructions retain their original authority.
 				// Only real user turns participate in unsupported-content refusal.
@@ -264,7 +271,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				message := []byte(`{"role":"","content":[]}`)
 				message, _ = sjson.SetBytes(message, "role", role)
 
-				if content := item.Get("content"); content.Exists() && content.IsArray() {
+				if content.Exists() && content.IsArray() {
 					var contentItems [][]byte
 					// Counts the parts this turn really sends; an empty text part does not.
 					turnSendable := 0
@@ -505,6 +512,19 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 
 	return out, drops.Err()
+}
+
+func responsesContentHasChatCompletionsMedia(content gjson.Result) bool {
+	if !content.IsArray() {
+		return false
+	}
+	for _, contentItem := range content.Array() {
+		switch contentItem.Get("type").String() {
+		case "input_image", "image_url", "input_video", "video_url", "input_file", "input_audio":
+			return true
+		}
+	}
+	return false
 }
 
 // responsesInputFileToChatPart maps a Responses input_file part onto a Chat
